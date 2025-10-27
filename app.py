@@ -88,17 +88,12 @@ def format_number(x: float) -> str:
 
 @st.cache_data(show_spinner=False)
 def read_csv_robusto(origem: str | bytes, uploaded: bool = False) -> pd.DataFrame:
-    """
-    Lê CSV (URL ou upload) sem usar low_memory+python explicitamente,
-    tentando separadores diferentes.
-    """
     if uploaded:
         byts = origem if isinstance(origem, (bytes, bytearray)) else origem.read()
         buf = io.BytesIO(byts)
     else:
         buf = origem  # URL string
 
-    # 1) autodetect
     try:
         df = pd.read_csv(buf, sep=None, engine="python", on_bad_lines="skip", dtype=str)
         if not df.empty:
@@ -106,7 +101,6 @@ def read_csv_robusto(origem: str | bytes, uploaded: bool = False) -> pd.DataFram
     except Exception:
         pass
 
-    # 2) força ';'
     try:
         if uploaded:
             buf.seek(0)
@@ -116,7 +110,6 @@ def read_csv_robusto(origem: str | bytes, uploaded: bool = False) -> pd.DataFram
     except Exception:
         pass
 
-    # 3) força ','
     if uploaded:
         buf.seek(0)
     df = pd.read_csv(buf, sep=",", engine="python", on_bad_lines="skip", dtype=str)
@@ -164,7 +157,6 @@ def to_numeric_safe(s: pd.Series) -> pd.Series:
         errors="coerce",
     )
 
-# Cache 1h para a base padrão
 @st.cache_data(ttl=3600, show_spinner="Carregando dados da ANVISA...")
 def get_default_dataframe() -> pd.DataFrame:
     df = read_csv_robusto(DEFAULT_URL, uploaded=False)
@@ -176,7 +168,6 @@ def get_default_dataframe() -> pd.DataFrame:
 def pagina_anvisa():
     st.header("Painel de Estoques e Produção Hemoterápica — ANVISA (Hemoprod)")
 
-    # Base inicial (padrão) no estado da sessão
     if "hemoprod_df" not in st.session_state:
         st.session_state["hemoprod_df"] = get_default_dataframe()
 
@@ -219,12 +210,9 @@ def pagina_anvisa():
         st.info("O painel está vazio. Tente carregar a URL ou enviar um CSV.")
         return
 
-    # Detecta colunas
     col_ano, col_uf, metricas = detecta_colunas(df)
 
-    # Controles
     c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.6, 1])
-    # Ano
     with c1:
         anos_opc = ["(Todos)"]
         ano_recente = None
@@ -236,7 +224,6 @@ def pagina_anvisa():
                 anos_opc = ["(Todos)", "(Mais recente)"] + anos_unicos
         ano_escolhido = st.selectbox("Ano", anos_opc, index=0, key="anv_ano")
 
-    # Coluna UF
     with c2:
         opcoes_uf = ["<não há>"] + list(df.columns)
         default_uf = (df.columns.tolist().index(col_uf) + 1) if (col_uf in df.columns) else 0
@@ -244,17 +231,14 @@ def pagina_anvisa():
         if uf_col == "<não há>":
             uf_col = None
 
-    # Métrica
     with c3:
         if len(metricas) == 0:
             metricas = [c for c in df.columns if c not in {col_ano, uf_col}]
         met_col = st.selectbox("Coluna MÉTRICA (para Soma)", metricas, key="anv_metrica")
 
-    # Agregação
     with c4:
         oper = st.selectbox("Agregação", ["Soma", "Contagem"], index=0, key="anv_oper")
 
-    # ----------------- FILTRO POR ANO -----------------
     df_ag = df.copy()
     if col_ano and ano_escolhido != "(Todos)":
         if ano_escolhido == "(Mais recente)" and (ano_recente is not None):
@@ -262,18 +246,15 @@ def pagina_anvisa():
         elif ano_escolhido not in {"(Todos)", "(Mais recente)"}:
             df_ag = df_ag[df_ag[col_ano].astype(str) == str(ano_escolhido)]
 
-    # ----------------- KPI -----------------
     total_reg = len(df_ag)
     anos_dist = df_ag[col_ano].nunique(dropna=True) if col_ano else 0
     ufs_dist = df_ag[uf_col].nunique(dropna=True) if uf_col else 0
 
-    # ----------------- AGREGAÇÃO POR UF -----------------
     if uf_col:
         uf_norm = df_ag[uf_col].astype(str).map(uf_para_sigla)
         uf_norm = uf_norm.fillna(df_ag[uf_col].astype(str).str.upper().str.strip())
         df_ag = df_ag.assign(__uf__=uf_norm)
 
-        # valor base para agregação
         if oper == "Soma":
             valores = to_numeric_safe(df_ag[met_col])
             df_ag = df_ag.assign(__valor__=valores)
@@ -288,12 +269,11 @@ def pagina_anvisa():
         grupo["uf"] = grupo["uf"].astype(str).str.upper().str.strip()
         grupo = grupo[grupo["uf"].isin(UF_CENTER.keys())]
 
-        # --------- CORREÇÃO LOCAL APENAS PARA RJ / SP (quando Soma resulta em 0) ----------
+        # Correção apenas para RJ e SP quando Soma zerar
         if oper == "Soma":
             alvo = {"RJ", "SP"}
             zerados = grupo[grupo["uf"].isin(alvo) & ((grupo["valor"].isna()) | (grupo["valor"] == 0))]
             if not zerados.empty:
-                # contagem de linhas por UF (mesmo filtro de ano)
                 contagem = (
                     df_ag[df_ag["__uf__"].isin(alvo)]
                     .groupby("__uf__", dropna=False)
@@ -301,13 +281,11 @@ def pagina_anvisa():
                     .reset_index(name="cont")
                     .rename(columns={"__uf__": "uf"})
                 )
-                # aplica somente onde estava zero/NaN
                 for _, r in zerados.iterrows():
                     uf = r["uf"]
                     cont = contagem.loc[contagem["uf"] == uf, "cont"]
                     if not cont.empty:
                         grupo.loc[grupo["uf"] == uf, "valor"] = float(cont.values[0])
-        # -----------------------------------------------------------------------------------
     else:
         grupo = pd.DataFrame(columns=["uf", "valor"])
 
@@ -324,7 +302,6 @@ def pagina_anvisa():
         st.metric(("Total (Soma)" if oper == "Soma" else "Total (Contagem)"),
                   format_number(total_agregado))
 
-    # ----------------- MAPA -----------------
     st.subheader("Mapa por UF")
     if len(grupo) == 0:
         st.info("Não há dados suficientes para o mapa (verifique a coluna UF e a agregação).")
@@ -347,7 +324,7 @@ def pagina_anvisa():
                 data=plot_df,
                 get_position=["lon", "lat"],
                 get_radius="radius",
-                get_fill_color=[220, 38, 38, 180],  # vermelho
+                get_fill_color=[220, 38, 38, 180],
                 pickable=True,
             )
             view_state = pdk.ViewState(latitude=-14.2350, longitude=-51.9253, zoom=3.5)
@@ -362,26 +339,83 @@ def pagina_anvisa():
                 ),
                 use_container_width=True,
             )
-
             st.caption("🔴 Pontos maiores indicam maior valor agregado (escala raiz).")
         else:
             st.info("Sem pontos válidos para plotar (verifique as UFs).")
 
-    # ----------------- TABELA -----------------
     st.subheader("Tabela agregada por UF")
     st.dataframe(grupo.sort_values("valor", ascending=False), use_container_width=True)
 
-    # ----------------- DADOS BRUTOS -----------------
     with st.expander(f"Mostrar dados brutos ({len(df)} linhas)", expanded=False):
         st.dataframe(df, use_container_width=True)
 
 def pagina_links_estaduais():
-    # ⚠️ Você disse que os links estão OK. Mantive como estavam.
     st.header("Acesse páginas/oficiais e pesquise por hemocentros do seu estado.")
+
+    # --------- MAPEAMENTO DE SITES OFICIAIS POR UF (confiáveis) ----------
+    LINKS_OFICIAIS = {
+        "AC": "https://saude.ac.gov.br/hemocentro-do-acre-hemoacre",
+        "AL": "http://www.hemoal.al.gov.br/",
+        "AM": "https://www.hemoam.am.gov.br/",
+        "AP": "https://hemoap.ap.gov.br/",
+        "BA": "http://www.hemoba.ba.gov.br/",
+        "CE": "https://www.hemoce.ce.gov.br/",
+        "DF": "https://www.fhb.df.gov.br/",
+        "ES": "https://hemoes.es.gov.br/",
+        "GO": "https://www.saude.go.gov.br/hemocentro",
+        "MA": "https://www.hemomar.ma.gov.br/",
+        "MG": "https://www.hemominas.mg.gov.br/",
+        "MS": "https://www.saude.ms.gov.br/hemosul/",
+        "MT": "https://www.saude.mt.gov.br/hemocentro",
+        "PA": "https://www.hemopa.pa.gov.br/",
+        "PB": "https://paraiba.pb.gov.br/diretas/saude/hemocentro",
+        "PE": "http://www.hemope.pe.gov.br/",
+        "PI": "http://www.hemopi.pi.gov.br/",
+        "PR": "https://www.saude.pr.gov.br/Hemepar",
+        "RJ": "https://www.hemorio.rj.gov.br/",
+        "RN": "http://www.hemonorte.rn.gov.br/",
+        "RO": "https://rondonia.ro.gov.br/fhemeron/",
+        "RR": "",  # se vazio, cai no fallback
+        "RS": "https://saude.rs.gov.br/hemorgs",
+        "SC": "https://www.hemosc.org.br/",
+        "SE": "https://saude.se.gov.br/hemose/",
+        "SP": "https://www.prosangue.sp.gov.br/",
+        "TO": "https://www.to.gov.br/saude/hemorrede/",
+    }
+    # --------------------------------------------------------------------
+
     ufs = list(UF_CENTER.keys())
-    base_link = "https://www.google.com/search?q=doar+sangue+{UF}+hemocentro"
-    df_links = pd.DataFrame({"UF": ufs, "Link": [f"[Abrir]({base_link.format(UF=u)})" for u in ufs]})
-    st.dataframe(df_links, use_container_width=True)
+    busca = [f"https://www.google.com/search?q=doar+sangue+{u}+hemocentro" for u in ufs]
+    oficiais = [LINKS_OFICIAIS.get(u, "") for u in ufs]
+
+    df_links = pd.DataFrame(
+        {
+            "UF": ufs,
+            "Site oficial": oficiais,
+            "Busca (fallback)": busca,
+        }
+    )
+
+    # Tabela com colunas clicáveis (Streamlit 1.50)
+    st.dataframe(
+        df_links,
+        use_container_width=True,
+        column_config={
+            "Site oficial": st.column_config.LinkColumn("Site oficial", display_text="Abrir"),
+            "Busca (fallback)": st.column_config.LinkColumn("Busca (fallback)", display_text="Abrir"),
+        },
+    )
+
+    # Botão por UF
+    st.subheader("Abrir rapidamente")
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        uf_escolhida = st.selectbox("UF", ufs, index=ufs.index("SP") if "SP" in ufs else 0)
+    with col2:
+        url_oficial = LINKS_OFICIAIS.get(uf_escolhida) or ""
+        url_fallback = f"https://www.google.com/search?q=doar+sangue+{uf_escolhida}+hemocentro"
+        url_final = url_oficial if url_oficial else url_fallback
+        st.link_button("Abrir site oficial / busca", url_final, type="primary")
 
 def pagina_cadastro():
     st.header("Cadastrar doador (opcional)")
@@ -413,7 +447,7 @@ def pagina_sobre():
         **Banco de Sangue Digital** — painel com dados oficiais, pronto para apresentações.
 
         - **ANVISA (nacional)**: lê o CSV público do Hemoprod, gera KPIs e mapa por UF.  
-        - **Estoques estaduais**: atalhos para pesquisa de hemocentros por estado.  
+        - **Hemocentros estaduais**: lista de sites oficiais e busca de fallback.  
         - **Cadastrar doador**: formulário simples (exemplo local).
 
         **Dica:** use o botão *Carregar URL agora* para atualizar direto do site da ANVISA
