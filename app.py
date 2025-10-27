@@ -1,6 +1,3 @@
-# app.py
-# Banco de Sangue Digital — Painel de Estoques e Produção Hemoterápica
-
 from __future__ import annotations
 
 import io
@@ -20,9 +17,6 @@ st.set_page_config(
     page_icon="🩸",
     layout="wide",
 )
-
-st.sidebar.title("🩸 Banco de Sangue Digital")
-st.sidebar.caption("Fontes oficiais e dados agregados — prontos para apresentação.")
 
 # =============================================================================
 # Constantes
@@ -59,6 +53,39 @@ UF_NOMES = {
     "RONDÔNIA": "RO", "RORAIMA": "RR", "SANTA CATARINA": "SC",
     "SAO PAULO": "SP", "SÃO PAULO": "SP", "SERGIPE": "SE", "TOCANTINS": "TO"
 }
+
+# --------- MAPEAMENTO DE SITES OFICIAIS POR UF (confiáveis) ----------
+LINKS_OFICIAIS = {
+    "AC": "https://saude.ac.gov.br/hemocentro-do-acre-hemoacre",
+    "AL": "http://www.hemoal.al.gov.br/",
+    "AM": "https://www.hemoam.am.gov.br/",
+    "AP": "https://hemoap.ap.gov.br/",
+    "BA": "http://www.hemoba.ba.gov.br/",
+    "CE": "https://www.hemoce.ce.gov.br/",
+    "DF": "https://www.fhb.df.gov.br/",
+    "ES": "https://hemoes.es.gov.br/",
+    "GO": "https://www.saude.go.gov.br/hemocentro",
+    "MA": "https://www.hemomar.ma.gov.br/",
+    "MG": "https://www.hemominas.mg.gov.br/",
+    "MS": "https://www.saude.ms.gov.br/hemosul/",
+    "MT": "https://www.saude.mt.gov.br/hemocentro",
+    "PA": "https://www.hemopa.pa.gov.br/",
+    "PB": "https://paraiba.pb.gov.br/diretas/saude/hemocentro",
+    "PE": "http://www.hemope.pe.gov.br/",
+    "PI": "http://www.hemopi.pi.gov.br/",
+    "PR": "https://www.saude.pr.gov.br/Hemepar",
+    "RJ": "https://www.hemorio.rj.gov.br/",
+    "RN": "http://www.hemonorte.rn.gov.br/",
+    "RO": "https://rondonia.ro.gov.br/fhemeron/",
+    "RR": "",  # se vazio, cai no fallback
+    "RS": "https://saude.rs.gov.br/hemorgs",
+    "SC": "https://www.hemosc.org.br/",
+    "SE": "https://saude.se.gov.br/hemose/",
+    "SP": "https://www.prosangue.sp.gov.br/",
+    "TO": "https://www.to.gov.br/saude/hemorrede/",
+}
+# --------------------------------------------------------------------
+
 
 # =============================================================================
 # Utilidades
@@ -351,39 +378,7 @@ def pagina_anvisa():
 
 def pagina_links_estaduais():
     st.header("Acesse páginas/oficiais e pesquise por hemocentros do seu estado.")
-
-    # --------- MAPEAMENTO DE SITES OFICIAIS POR UF (confiáveis) ----------
-    LINKS_OFICIAIS = {
-        "AC": "https://saude.ac.gov.br/hemocentro-do-acre-hemoacre",
-        "AL": "http://www.hemoal.al.gov.br/",
-        "AM": "https://www.hemoam.am.gov.br/",
-        "AP": "https://hemoap.ap.gov.br/",
-        "BA": "http://www.hemoba.ba.gov.br/",
-        "CE": "https://www.hemoce.ce.gov.br/",
-        "DF": "https://www.fhb.df.gov.br/",
-        "ES": "https://hemoes.es.gov.br/",
-        "GO": "https://www.saude.go.gov.br/hemocentro",
-        "MA": "https://www.hemomar.ma.gov.br/",
-        "MG": "https://www.hemominas.mg.gov.br/",
-        "MS": "https://www.saude.ms.gov.br/hemosul/",
-        "MT": "https://www.saude.mt.gov.br/hemocentro",
-        "PA": "https://www.hemopa.pa.gov.br/",
-        "PB": "https://paraiba.pb.gov.br/diretas/saude/hemocentro",
-        "PE": "http://www.hemope.pe.gov.br/",
-        "PI": "http://www.hemopi.pi.gov.br/",
-        "PR": "https://www.saude.pr.gov.br/Hemepar",
-        "RJ": "https://www.hemorio.rj.gov.br/",
-        "RN": "http://www.hemonorte.rn.gov.br/",
-        "RO": "https://rondonia.ro.gov.br/fhemeron/",
-        "RR": "",  # se vazio, cai no fallback
-        "RS": "https://saude.rs.gov.br/hemorgs",
-        "SC": "https://www.hemosc.org.br/",
-        "SE": "https://saude.se.gov.br/hemose/",
-        "SP": "https://www.prosangue.sp.gov.br/",
-        "TO": "https://www.to.gov.br/saude/hemorrede/",
-    }
-    # --------------------------------------------------------------------
-
+    
     ufs = list(UF_CENTER.keys())
     busca = [f"https://www.google.com/search?q=doar+sangue+{u}+hemocentro" for u in ufs]
     oficiais = [LINKS_OFICIAIS.get(u, "") for u in ufs]
@@ -440,6 +435,71 @@ def pagina_cadastro():
             st.success("Cadastro salvo localmente (exemplo).")
             st.json({"nome": nome, "email": email, "telefone": tel, "uf": uf, "cidade": cidade, "tipo": tipo})
 
+def pagina_rj_sp_experimental():
+    st.header("Análise Detalhada: Rio de Janeiro (RJ) e São Paulo (SP) 🩸")
+    st.warning(
+        "**ATENÇÃO:** Esta seção é **experimental**. Devido à falta de um CSV bruto consolidado "
+        "desses estados, o foco aqui é em links diretos para os boletins e a opção de "
+        "upload para análise local de dados separados (e não consolidados com a ANVISA)."
+    )
+    
+    st.markdown("---")
+
+    st.subheader("Sites Oficiais e Boletins de Estoque")
+    c_rj, c_sp = st.columns(2)
+    
+    with c_rj:
+        st.metric("Rio de Janeiro (RJ)", "HEMORIO")
+        st.markdown(
+            f"""
+            - **Site Principal:** [Abrir Hemorio]({LINKS_OFICIAIS.get('RJ')})
+            - **Busca por Boletins/Nível de Estoque:** [Pesquisa Google (Hemorio)](https://www.google.com/search?q=Hemorio+boletim+estoque+de+sangue)
+            """
+        )
+    with c_sp:
+        st.metric("São Paulo (SP)", "PROSANGUE")
+        st.markdown(
+            f"""
+            - **Site Principal:** [Abrir Pró-Sangue]({LINKS_OFICIAIS.get('SP')})
+            - **Nível de Estoque:** [Página de Níveis da Pró-Sangue](https://www.prosangue.sp.gov.br/estoque/)
+            """
+        )
+
+    st.markdown("---")
+    st.subheader("Upload de Arquivo Bruto (RJ ou SP)")
+
+    up_rj_sp = st.file_uploader(
+        "Envie um CSV ou Excel com dados de RJ/SP (para análise local)", 
+        type=["csv", "xlsx"]
+    )
+
+    if up_rj_sp:
+        with st.spinner(f"Lendo arquivo {up_rj_sp.name}..."):
+            try:
+                # Tenta ler como CSV robusto (se for CSV)
+                if up_rj_sp.name.endswith('.csv'):
+                    df_upload = read_csv_robusto(up_rj_sp.getvalue(), uploaded=True)
+                # Tenta ler como Excel (se for XLSX)
+                elif up_rj_sp.name.endswith('.xlsx'):
+                    df_upload = pd.read_excel(io.BytesIO(up_rj_sp.getvalue()), dtype=str)
+                else:
+                    st.error("Formato de arquivo não suportado. Use CSV ou XLSX.")
+                    return
+                
+                df_upload = normaliza_colunas(df_upload)
+                
+                st.success(f"Arquivo '{up_rj_sp.name}' carregado com sucesso!")
+                st.caption(f"Linhas: {len(df_upload)} | Colunas: {len(df_upload.columns)}")
+                
+                st.subheader("Visualização dos Dados Carregados")
+                st.dataframe(df_upload, use_container_width=True)
+
+            except Exception as e:
+                st.error(f"Falha ao ler o arquivo. Verifique o formato e a codificação. Erro: {e}")
+    else:
+        st.info("Aguardando upload de um arquivo CSV/XLSX específico de RJ ou SP.")
+
+
 def pagina_sobre():
     st.header("Sobre este painel")
     st.markdown(
@@ -448,30 +508,48 @@ def pagina_sobre():
 
         - **ANVISA (nacional)**: lê o CSV público do Hemoprod, gera KPIs e mapa por UF.  
         - **Hemocentros estaduais**: lista de sites oficiais e busca de fallback.  
+        - **RJ/SP (Experimental)**: Links diretos e opção de upload para dados brutos específicos.
         - **Cadastrar doador**: formulário simples (exemplo local).
 
-        **Dica:** use o botão *Carregar URL agora* para atualizar direto do site da ANVISA
+        **Dica:** use o botão *Carregar URL agora* para atualizar a base diretamente do site da ANVISA
         ou envie o CSV, caso precise trabalhar off-line.
         """
     )
 
 # =============================================================================
-# Navegação (sidebar)
+# Configuração da Barra Lateral e Navegação
 # =============================================================================
+
+# Adiciona um logo simples
+st.sidebar.markdown(
+    """
+    <div style="font-size: 32px; text-align: center; margin-bottom: 5px;">
+        <span style="color: red; font-weight: bold;">🩸</span>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+st.sidebar.title("🩸 Banco de Sangue Digital")
+st.sidebar.caption("Fontes oficiais e dados agregados — prontos para apresentação.")
+
 st.sidebar.subheader("Navegação")
 secao = st.sidebar.radio(
     label="Navegação",
-    options=["ANVISA (nacional)", "Hemocentros estaduais", "Cadastrar doador", "Sobre"],
+    options=["ANVISA (nacional)", "Hemocentros estaduais", "RJ/SP (Experimental)", "Cadastrar doador", "Sobre"],
     index=0,
     label_visibility="collapsed",
 )
 
 st.sidebar.info("💡 Use o botão **Carregar URL agora** para atualizar a base diretamente da ANVISA.")
 
+# Lógica de roteamento
 if secao == "ANVISA (nacional)":
     pagina_anvisa()
 elif secao == "Hemocentros estaduais":
     pagina_links_estaduais()
+elif secao == "RJ/SP (Experimental)":
+    pagina_rj_sp_experimental()
 elif secao == "Cadastrar doador":
     pagina_cadastro()
 else:
