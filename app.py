@@ -78,26 +78,54 @@ HEMO_LINKS = {
 }
 
 # =============================================================================
-# Funções utilitárias
+# Utilidades
 # =============================================================================
 def strip_accents_upper(s: str) -> str:
     s = unicodedata.normalize("NFD", s or "").encode("ascii","ignore").decode("ascii")
     return s.upper().strip()
 
 def uf_para_sigla(v):
-    if not v: return None
-    v=str(v).strip()
-    if len(v)==2: return v.upper()
+    if v is None or str(v).strip()=="":
+        return None
+    v = str(v).strip()
+    if len(v)==2:
+        return v.upper()
     return UF_NOMES.get(strip_accents_upper(v), v.upper())
 
-def to_num(c): 
-    return pd.to_numeric(c.astype(str).str.replace(".","").str.replace(",","."), errors="coerce")
+def to_num(c: pd.Series) -> pd.Series:
+    return pd.to_numeric(
+        c.astype(str).str.replace("\u00A0","", regex=False) # NBSP se houver
+         .str.replace(".","", regex=False)
+         .str.replace(",",".", regex=False),
+        errors="coerce"
+    )
 
-@st.cache_data(ttl=3600)
-def load_default():
+@st.cache_data(ttl=3600, show_spinner="Baixando base da ANVISA…")
+def load_default() -> pd.DataFrame:
     df = pd.read_csv(DEFAULT_URL, dtype=str, sep=None, engine="python", on_bad_lines="skip")
     df.columns = [c.lower().strip() for c in df.columns]
     return df
+
+def metricas_numericas(df: pd.DataFrame, exclude: set) -> list[str]:
+    """Devolve as colunas com forte evidência numérica (após parsing)."""
+    candidatos = []
+    for c in df.columns:
+        if c in exclude: 
+            continue
+        s = to_num(df[c])
+        if s.notna().sum() >= max(20, len(df)*0.05) and s.sum(skipna=True) > 0:
+            candidatos.append(c)
+    # Ordena por “variância” para preferir colunas mais informativas
+    candidatos = sorted(candidatos, key=lambda x: to_num(df[x]).var(skipna=True), reverse=True)
+    return candidatos
+
+def format_num(x) -> str:
+    try:
+        x = float(x)
+        if x.is_integer(): return f"{int(x):,}".replace(",", ".")
+        return f"{x:,.2f}".replace(",", ".")
+    except:
+        return "-"
 
 # =============================================================================
 # Página ANVISA
@@ -110,81 +138,194 @@ def pagina_anvisa():
 
     df = st.session_state.df.copy()
 
-    # Detecta colunas
+    # Detecta colunas candidatas
     col_ano = next((c for c in df.columns if "ano" in c), None)
-    col_uf = next((c for c in df.columns if c=="uf" or " uf" in c), None)
-    metricas = [c for c in df.columns if c not in {col_ano,col_uf}]
+    col_uf  = next((c for c in df.columns if c=="uf" or " uf" in c), None)
+
+    # Sugere métricas realmente numéricas
+    sugeridas = metricas_numericas(df, exclude={col_ano, col_uf})
+    if not sugeridas and len(df.columns) > 2:
+        # fallback “educado”
+        sugeridas = [c for c in df.columns if c not in {col_ano, col_uf}]
+
+    # Controles
+    c1,c2,c3,c4 = st.columns([1.2,1.2,1.8,1.2])
+    with c1:
+        anos = ["(Todos)"]
+        if col_ano is not None and df[col_ano].notna().any():
+            anos = ["(Todos)"] + sorted(df[col_ano].dropna().unique())
+        ano = st.selectbox("Ano", anos, index=0)
+    with c2:
+        st.selectbox("Coluna UF", [col_uf or "(não detectada)"], index=0, disabled=True)
+    with c3:
+        met = st.selectbox("Métrica (Soma)", sugeridas, index=0 if sugeridas else None)
+    with c4:
+        oper = st.selectbox("Agregação", ["Soma","Contagem"], index=0)
+
+    # Avançado
+    with st.expander("Opções avançadas"):
+        usar_soma_crua = st.checkbox("Usar apenas soma crua (sem fallback por contagem em UFs zeradas)", value=False)
+        mostrar_debug_rj_sp = st.checkbox("Mostrar amostra de linhas de RJ/SP", value=False)
 
     # Filtros
-    ano = st.selectbox("Ano", ["(Todos)"]+sorted(df[col_ano].dropna().unique()) if col_ano else ["(Todos)"])
-    uf_c = st.selectbox("Coluna UF", [col_uf], disabled=True)
-    met = st.selectbox("Métrica (Soma)", metricas)
-    oper = st.selectbox("Agregação", ["Soma","Contagem"])
+    if col_ano and ano != "(Todos)":
+        df = df[df[col_ano]==ano]
 
-    if ano!="(Todos)": df = df[df[col_ano]==ano]
+    if col_uf is None or met is None:
+        st.warning("Não foi possível detectar automaticamente as colunas UF e/ou uma métrica numérica.")
+        return
 
-    df["__uf__"] = df[uf_c].apply(uf_para_sigla)
-    df["__valor__"] = 1 if oper=="Contagem" else to_num(df[met])
+    # Normaliza UF + prepara valor
+    df["__uf__"] = df[col_uf].apply(uf_para_sigla)
+    if oper == "Soma":
+        df["__valor__"] = to_num(df[met])
+    else:
+        df["__valor__"] = 1.0
 
-    base = df.groupby("__uf__", as_index=False)["__valor__"].sum().rename(columns={"__valor__":"valor"})
+    # Agregação
+    base = (
+        df.groupby("__uf__", as_index=False)["__valor__"]
+          .sum()
+          .rename(columns={"__uf__":"uf","__valor__":"valor"})
+    )
 
-    # ✅ Correção RJ/SP fallback (se soma=0 e existem registros → usa contagem)
-    if oper=="Soma":
-        contagem = df.groupby("__uf__",as_index=False).size().rename(columns={"size":"cont"})
-        base = base.merge(contagem,on="__uf__",how="left")
+    # Mantém apenas UFs brasileiras válidas
+    base = base[base["uf"].isin(UF_CENTER.keys())].copy()
+
+    # ⚙️ Fallback: RJ/SP zerados → usa contagem (apenas se a soma for zero e existir dado)
+    if oper == "Soma" and not usar_soma_crua:
+        cont = df.groupby("__uf__", as_index=False).size().rename(columns={"__uf__":"uf","size":"cont"})
+        base = base.merge(cont, on="uf", how="left")
         for uf_fix in ["SP","RJ"]:
-            if uf_fix in base["__uf__"].values:
-                row = base.loc[base["__uf__"]==uf_fix]
-                if float(row["valor"])==0 and float(row["cont"])>0:
-                    base.loc[base["__uf__"]==uf_fix,"valor"]=row["cont"]
+            if uf_fix in base["uf"].values:
+                lin = base.loc[base["uf"]==uf_fix]
+                soma = float(lin["valor"].iloc[0] if not lin.empty else 0.0)
+                qtd  = float(lin["cont"].iloc[0]  if "cont" in lin.columns and not lin.empty else 0.0)
+                if soma == 0.0 and qtd > 0:
+                    base.loc[base["uf"]==uf_fix, "valor"] = qtd
+        if "cont" in base.columns:
+            base = base.drop(columns=["cont"])
 
-    base["uf"] = base["__uf__"]
-    base = base[["uf","valor"]].dropna()
-
-    st.metric("Total agregado", int(base["valor"].sum()))
+    # KPIs
+    colA,colB,colC,colD = st.columns(4)
+    with colA: st.metric("Registros", format_num(len(df)))
+    with colB: st.metric("Anos distintos", format_num(df[col_ano].nunique() if col_ano else 0))
+    with colC: st.metric("UF distintas", format_num(df["__uf__"].nunique()))
+    with colD: st.metric(("Total (Soma)" if oper=="Soma" else "Total (Contagem)"), format_num(base["valor"].sum()))
 
     # Mapa
     st.subheader("Mapa por UF")
-    plot = []
-    vmax = base["valor"].max()
-    for _,r in base.iterrows():
-        if r["uf"] in UF_CENTER:
-            lat,lon = UF_CENTER[r["uf"]]
-            plot.append({"uf":r["uf"],"valor":r["valor"],"lat":lat,"lon":lon,"r":4000*np.sqrt(r["valor"]/vmax)})
+    if base.empty:
+        st.info("Não há dados para exibir no mapa.")
+    else:
+        vmax = base["valor"].max() or 1.0
+        plot = []
+        for _,r in base.iterrows():
+            uf = r["uf"]
+            if uf in UF_CENTER:
+                lat,lon = UF_CENTER[uf]
+                plot.append({
+                    "uf": uf,
+                    "valor": float(r["valor"]),
+                    "lat": lat,
+                    "lon": lon,
+                    "radius": 6000 + 4000*np.sqrt(float(r["valor"])/vmax)
+                })
+        if plot:
+            layer = pdk.Layer(
+                "ScatterplotLayer",
+                data=plot,
+                get_position=["lon","lat"],
+                get_radius="radius",
+                get_fill_color=[220,38,38,180],
+                pickable=True,
+            )
+            st.pydeck_chart(
+                pdk.Deck(
+                    layers=[layer],
+                    initial_view_state=pdk.ViewState(latitude=-14.2, longitude=-51.9, zoom=3.7),
+                    tooltip={"text":"{uf}: {valor}"}
+                ),
+                use_container_width=True,
+            )
+            st.caption("🔴 Pontos maiores indicam maior valor agregado (escala raiz).")
 
-    if plot:
-        layer = pdk.Layer("ScatterplotLayer", data=plot, get_position=["lon","lat"], get_radius="r",
-                           get_fill_color=[220,38,38,180], pickable=True)
-        st.pydeck_chart(pdk.Deck(layers=[layer],initial_view_state=pdk.ViewState(latitude=-14,longitude=-51,zoom=3.9),
-                                tooltip={"text":"{uf}: {valor}"}))
-
+    # Ranking / Tabela
     st.subheader("Tabela agregada por UF")
-    st.dataframe(base.sort_values("valor",ascending=False), use_container_width=True)
+    st.dataframe(base.sort_values("valor", ascending=False), use_container_width=True)
+
+    # Debug RJ/SP
+    if mostrar_debug_rj_sp:
+        with st.expander("Amostra de linhas — RJ e SP"):
+            st.write("**RJ**")
+            st.dataframe(df[df["__uf__"]=="RJ"].head(20), use_container_width=True)
+            st.write("**SP**")
+            st.dataframe(df[df["__uf__"]=="SP"].head(20), use_container_width=True)
 
 # =============================================================================
-# Página Links Estaduais
+# Página: Hemocentros oficiais (links clicáveis)
 # =============================================================================
-def pagina_links():
-    st.header("Hemocentros Oficiais por Estado")
-    df = pd.DataFrame({"UF":list(HEMO_LINKS.keys()),"Acessar":[f"[Abrir]({link})" for link in HEMO_LINKS.values()]})
-    st.write(df.to_markdown(index=False), unsafe_allow_html=True)
+def pagina_links_estaduais():
+    st.header("Hemocentros Oficiais por Estado (sites verificados)")
+    df = pd.DataFrame(
+        {"UF": list(HEMO_LINKS.keys()), "Site oficial": list(HEMO_LINKS.values())}
+    ).sort_values("UF")
+
+    st.data_editor(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Site oficial": st.column_config.LinkColumn(
+                "Site oficial",
+                help="Abrir site do hemocentro",
+                display_text="Abrir"
+            )
+        },
+        disabled=True,
+    )
+
+# =============================================================================
+# (Esqueleto) PÁGINA — Painel Avançado
+# =============================================================================
+def pagina_avancada():
+    st.header("Painel Avançado (prévia)")
+    st.markdown(
+        "- **Heatmap/Ranking** por UF\n"
+        "- **Top UFs** por métrica, **tendência temporal** (se a coluna de ano existir)\n"
+        "- **Exportar** CSV/Excel dos agregados\n"
+        "- **Indicadores críticos** (threshold configurável)\n\n"
+        "➡️ Diga qual **coluna métrica** você quer destacar (ex.: *bolsas coletadas*, *coletas*, *doações*), que eu integro os gráficos já usando essa base."
+    )
 
 # =============================================================================
 # Página Cadastro (Exemplo local)
 # =============================================================================
 def pagina_cadastro():
-    st.header("Cadastro de possível doador")
+    st.header("Cadastro de possível doador (exemplo local)")
     with st.form("f"):
         nome = st.text_input("Nome completo")
         uf = st.selectbox("UF", list(HEMO_LINKS.keys()))
-        enviado = st.form_submit_button("Salvar")
-    if enviado:
-        st.success("Cadastro registrado (local).")
+        contato = st.text_input("Telefone/WhatsApp (opcional)")
+        ok = st.form_submit_button("Salvar")
+    if ok:
+        st.success("Cadastro registrado localmente (simulado).")
 
 # =============================================================================
 # Navegação
 # =============================================================================
-page = st.sidebar.radio("Navegação",["ANVISA (nacional)","Hemocentros estaduais","Cadastrar doador"])
-if page=="ANVISA (nacional)": pagina_anvisa()
-elif page=="Hemocentros estaduais": pagina_links()
-else: pagina_cadastro()
+st.sidebar.subheader("Navegação")
+secao = st.sidebar.radio(
+    "Escolha a seção",
+    ["ANVISA (nacional)", "Hemocentros estaduais", "Painel avançado", "Cadastrar doador"],
+    index=0
+)
+
+if secao == "ANVISA (nacional)":
+    pagina_anvisa()
+elif secao == "Hemocentros estaduais":
+    pagina_links_estaduais()
+elif secao == "Painel avançado":
+    pagina_avancada()
+else:
+    pagina_cadastro()
