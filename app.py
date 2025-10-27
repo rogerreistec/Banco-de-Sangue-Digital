@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import io
+import re
 import unicodedata
 from typing import Optional, Tuple, List
 
@@ -21,7 +22,7 @@ st.set_page_config(
     layout="wide",
 )
 
-# Sidebar simples (compatível com 1.50, sem HTML custom perigoso)
+# Sidebar simples (compatível com 1.50)
 st.sidebar.title("🩸 Banco de Sangue Digital")
 st.sidebar.caption("Fontes oficiais e dados agregados — prontos para apresentação.")
 
@@ -47,7 +48,7 @@ UF_CENTER = {
     "SE": (-10.5741, -37.3857), "SP": (-22.19, -48.79),     "TO": (-10.1753, -48.2982)
 }
 
-# normalização de nomes -> siglas (corrige SP/RJ e outras variações)
+# normalização de nomes -> siglas
 UF_NOMES = {
     "ACRE": "AC", "ALAGOAS": "AL", "AMAPA": "AP", "AMAPÁ": "AP", "AMAZONAS": "AM",
     "BAHIA": "BA", "CEARA": "CE", "CEARÁ": "CE", "DISTRITO FEDERAL": "DF",
@@ -61,6 +62,38 @@ UF_NOMES = {
     "SAO PAULO": "SP", "SÃO PAULO": "SP", "SERGIPE": "SE", "TOCANTINS": "TO"
 }
 
+# Links oficiais (ou estaduais) por UF (parceiros/órgãos de hemoterapia)
+# Obs.: se algum link mudar, o app ainda faz fallback para busca.
+LINKS_UF_OFICIAIS = {
+    "AC": "https://saude.ac.gov.br/assuntos/assistencia-a-saude/hemocentro-do-acre-hemoacre",
+    "AL": "https://saude.al.gov.br/orgaos/hemoal/",
+    "AM": "http://hemoam.am.gov.br/",
+    "AP": "https://www.ap.gov.br/orgaos/hemocentro-do-amapa-hemap",
+    "BA": "http://www.hemoba.ba.gov.br/",
+    "CE": "https://www.hemoce.ce.gov.br/",
+    "DF": "https://fhb.df.gov.br/hemocentro-de-brasilia/",
+    "ES": "https://saude.es.gov.br/hemocentro-do-espirito-santo-hemoes",
+    "GO": "https://www.saude.go.gov.br/hemogo",
+    "MA": "http://www.hemomar.ma.gov.br/",
+    "MG": "https://www.hemominas.mg.gov.br/",
+    "MS": "https://www.saude.ms.gov.br/hemosul/",
+    "MT": "http://www.saude.mt.gov.br/hemocentro",
+    "PA": "https://www.hemopa.pa.gov.br/",
+    "PB": "https://paraiba.pb.gov.br/diretas/saude/hemocentro",
+    "PE": "http://www.hemope.pe.gov.br/",
+    "PI": "https://www.saude.pi.gov.br/institucional/view/57/HEMOPI",
+    "PR": "https://www.saude.pr.gov.br/HEMEPAR",
+    "RJ": "http://www.hemorio.rj.gov.br/",
+    "RN": "https://www.hemonorte.rn.gov.br/",
+    "RO": "https://rondonia.ro.gov.br/fhemeron/",
+    "RR": "https://www.rr.gov.br/orgaos/femurar-fundacao-estadual-de-saude/",
+    "RS": "https://www.saude.rs.gov.br/hemorgs",
+    "SC": "https://www.hemosc.org.br/",
+    "SE": "https://saude.se.gov.br/hemose/",
+    "SP": "https://www.prosangue.sp.gov.br/",
+    "TO": "https://www.to.gov.br/saude/hemorrede/",
+}
+
 # =============================================================================
 # Utilidades
 # =============================================================================
@@ -68,7 +101,8 @@ def strip_accents_upper(s: str) -> str:
     s = unicodedata.normalize("NFD", (s or "")).encode("ascii", "ignore").decode("ascii")
     return " ".join(s.upper().split())
 
-def uf_para_sigla(valor: str) -> str | None:
+def uf_para_sigla_basico(valor: str) -> Optional[str]:
+    """Mapeia nomes por dicionário (ex.: 'SÃO PAULO' -> 'SP')."""
     if valor is None or str(valor).strip() == "":
         return None
     v = str(valor).strip()
@@ -76,6 +110,40 @@ def uf_para_sigla(valor: str) -> str | None:
         return v.upper()
     v2 = strip_accents_upper(v)
     return UF_NOMES.get(v2)
+
+UF_SIGLAS = set(UF_CENTER.keys())
+
+UF_REGEX = re.compile(
+    r"(?:^|[\s\-/,(])([A-Za-z]{2})(?:[\s\-/,)]|$)"
+)
+
+def uf_para_sigla(valor: str) -> Optional[str]:
+    """
+    Normalizador avançado de UF:
+    1) tenta mapeamento de nomes por dicionário (ex.: 'SÃO PAULO' -> 'SP');
+    2) tenta extrair sigla presente no texto (ex.: 'São Paulo - SP', 'RJ (capital)').
+    """
+    if valor is None or str(valor).strip() == "":
+        return None
+
+    # 1) mapeamento por nome
+    sig = uf_para_sigla_basico(valor)
+    if sig:
+        return sig
+
+    # 2) extração de sigla no texto
+    txt = strip_accents_upper(str(valor))
+    for m in UF_REGEX.finditer(txt):
+        cand = m.group(1).upper()
+        if cand in UF_SIGLAS:
+            return cand
+
+    # 3) fallback: se o texto for exatamente 'RJ'/'SP' com espaços mistos
+    v2 = txt.replace(".", "").replace(";", "").strip()
+    if v2 in UF_SIGLAS:
+        return v2
+
+    return None
 
 def format_number(x: float) -> str:
     if pd.isna(x):
@@ -149,7 +217,9 @@ def detecta_colunas(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str], Lis
         if c in {col_ano, col_uf}:
             continue
         amostra = pd.to_numeric(
-            df[c].dropna().astype(str).str.replace(".", "", regex=False).str.replace(",", ".", regex=False),
+            df[c].dropna().astype(str)
+              .str.replace(".", "", regex=False)
+              .str.replace(",", ".", regex=False),
             errors="coerce",
         )
         if amostra.notna().sum() > 0:
@@ -270,7 +340,9 @@ def pagina_anvisa():
 
     # ----------------- AGREGAÇÃO POR UF -----------------
     if uf_col:
+        # normalização robusta de UF
         uf_norm = df_ag[uf_col].astype(str).map(uf_para_sigla)
+        # onde ainda None, mantém uppercase original (última tentativa)
         uf_norm = uf_norm.fillna(df_ag[uf_col].astype(str).str.upper().str.strip())
         df_ag = df_ag.assign(__uf__=uf_norm)
 
@@ -284,6 +356,7 @@ def pagina_anvisa():
             .rename(columns={"__uf__": "uf", "__valor__": "valor"})
         )
         grupo["uf"] = grupo["uf"].astype(str).str.upper().str.strip()
+        # mantém apenas UFs válidas
         grupo = grupo[grupo["uf"].isin(UF_CENTER.keys())]
     else:
         grupo = pd.DataFrame(columns=["uf", "valor"])
@@ -340,7 +413,6 @@ def pagina_anvisa():
                 use_container_width=True,
             )
 
-            # Legenda simples
             st.caption("🔴 Pontos maiores indicam maior valor agregado. Cor fixa (vermelho).")
         else:
             st.info("Sem pontos válidos para plotar (verifique as UFs).")
@@ -355,9 +427,15 @@ def pagina_anvisa():
 
 def pagina_links_estaduais():
     st.header("Acesse páginas/oficiais e pesquise por hemocentros do seu estado.")
-    ufs = list(UF_CENTER.keys())
-    base_link = "https://www.google.com/search?q=doar+sangue+{UF}+hemocentro"
-    df_links = pd.DataFrame({"UF": ufs, "Link": [f"[Abrir]({base_link.format(UF=u)})" for u in ufs]})
+    linhas = []
+    for uf in sorted(UF_CENTER.keys()):
+        url = LINKS_UF_OFICIAIS.get(uf)
+        if not url or str(url).strip() == "":
+            # fallback: busca “oficial” no Google
+            url = f"https://www.google.com/search?q=hemocentro+oficial+{uf}+doar+sangue"
+        linhas.append((uf, f"[Abrir]({url})"))
+
+    df_links = pd.DataFrame(linhas, columns=["UF", "Link"])
     st.dataframe(df_links, use_container_width=True)
 
 def pagina_cadastro():
@@ -390,7 +468,7 @@ def pagina_sobre():
         **Banco de Sangue Digital** — painel com dados oficiais, pronto para apresentações.
 
         - **ANVISA (nacional)**: lê o CSV público do Hemoprod, gera KPIs e mapa por UF.  
-        - **Estoques estaduais**: atalhos para pesquisa de hemocentros por estado.  
+        - **Estoques estaduais**: links oficiais/parceiros por UF (com fallback de busca).  
         - **Cadastrar doador**: formulário simples (exemplo local).
 
         **Dica:** use o botão *Carregar URL agora* para atualizar direto do site da ANVISA
