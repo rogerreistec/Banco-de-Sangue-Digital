@@ -1,4 +1,4 @@
-streamlit
-pandas
-numpy
-pydeck
+streamlit>=1.50
+pandas>=2.1
+numpy>=1.26
+pydeck>=0.9
